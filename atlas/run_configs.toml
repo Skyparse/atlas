@@ -1,0 +1,5 @@
+xA_path = "./atlas/data/02_model_input/mineops_cd_xA.npy"
+xB_path = "./atlas/data/02_model_input/mineops_cd_xB.npy"
+y_path = "./atlas/data/02_model_input/mineops_cd_y.npy"
+output_dir = "./atlas/output"
+model_config_path = "./atlas/configs/model_config_01.toml"
