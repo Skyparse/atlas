@@ -1,8 +1,8 @@
 # src/data/dataloader.py
 import torch
-from torch.utils.data import DataLoader
 import queue
 import threading
+from torch.utils.data import DataLoader
 
 
 class PrefetchLoader:
@@ -35,18 +35,27 @@ class PrefetchLoader:
         return len(self.loader)
 
 
-def create_dataloaders(dataset, config):
+def create_dataloaders(dataset, training_config: dict):
+    """
+    Create a dataloader with the specified configuration.
+
+    Args:
+        dataset: The dataset to create a loader for
+        training_config: Dictionary containing training configuration
+    """
+    # Extract parameters from config
+    batch_size = training_config["batch_size"]
+    num_workers = training_config.get("num_workers", 4)
+
     loader = DataLoader(
         dataset,
-        batch_size=config.batch_size,
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=config.num_workers,
+        num_workers=num_workers,
         pin_memory=True,
     )
 
     if torch.cuda.is_available():
         loader = PrefetchLoader(loader, torch.device("cuda"))
-    elif torch.mps.is_available():
-        loader = PrefetchLoader(loader, torch.device("mps"))
 
     return loader

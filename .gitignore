@@ -140,3 +140,6 @@ src/output/
 # Ignore all data files but keep the directory structure
 src/data/*/**
 !src/data/*/**/
+
+# Ignore all output files but keep the directory structure
+experiments

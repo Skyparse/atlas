@@ -9,21 +9,23 @@ class ChangeDetectionDataset(Dataset):
     def __init__(self, xA_path, xB_path, mask_path=None, transform=None):
         """
         Args:
-            xA_path: path to the first timepoint images array
-            xB_path: path to the second timepoint images array
-            mask_path: path to the mask labels array (optional for prediction)
-            transform: optional transform to be applied on images
+            xA_path: Path to first timepoint images array
+            xB_path: Path to second timepoint images array
+            mask_path: Path to mask labels array (optional for prediction)
+            transform: Optional transform to be applied on images
         """
         self.xA = np.load(xA_path)
         self.xB = np.load(xB_path)
         self.masks = np.load(mask_path) if mask_path else None
         self.transform = transform
 
+        # Validate shapes
         assert len(self.xA) == len(self.xB), "Image pairs must have same length"
         if self.masks is not None:
             assert len(self.xA) == len(
                 self.masks
             ), "Images and masks must have same length"
+            assert len(self.masks.shape) == 4, "Masks must be one-hot encoded (B,C,H,W)"
 
     def __len__(self):
         return len(self.xA)
@@ -38,10 +40,12 @@ class ChangeDetectionDataset(Dataset):
             imageA = self.transform(imageA)
             imageB = self.transform(imageB)
 
-        # Return with or without mask depending on if it's for training
+        # Handle masks
         if self.masks is not None:
-            mask = torch.from_numpy(self.masks[idx]).long()
+            # Keep masks in one-hot format (B,C,H,W)
+            mask = torch.from_numpy(self.masks[idx]).float()
             return imageA, imageB, mask
+
         return imageA, imageB
 
 

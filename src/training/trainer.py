@@ -1,57 +1,88 @@
 # src/training/trainer.py
 import torch
-import torch.nn as nn
 from tqdm import tqdm
-from ..utils.metrics import calculate_metrics
 from .losses import CombinedLoss
 from .optimizer import ModelOptimizer
+from ..utils.device_utils import move_to_device
+from torch.nn import functional as F
 
 
 class ModelTrainer:
     def __init__(self, model, config, callbacks, logger):
+        """
+        Initialize ModelTrainer
+
+        Args:
+            model: The model to train
+            config: TrainExperimentConfig containing all configuration
+            callbacks: List of callbacks for training events
+            logger: Logger instance
+        """
         self.model = model
         self.config = config
         self.callbacks = callbacks
         self.logger = logger
 
         self.optimizer = ModelOptimizer(model, config)
-        self.criterion = CombinedLoss(
-            boundary_weight=config.training.boundary_weight,
-            dice_weight=config.training.dice_weight,
-        )
+        self.criterion = CombinedLoss()
+        self.device = self.optimizer.device
+
+        self.logger.info(f"Using device: {self.device}")
 
     def train(self, train_loader, val_loader):
-        self.logger.info("Starting training")
-        num_batches = len(train_loader)
+        """
+        Main training loop
 
+        Args:
+            train_loader: DataLoader for training data
+            val_loader: DataLoader for validation data
+        """
+        self.logger.info("Starting training")
+
+        # Training start callback
         for callback in self.callbacks:
             callback.on_train_begin(self)
 
-        for epoch in range(self.config.training.num_epochs):
-            self.logger.info(f"Epoch {epoch+1}/{self.config.training.num_epochs}")
+        try:
+            # Epoch loop
+            for epoch in range(self.config.training.num_epochs):
+                self.logger.info(f"Epoch {epoch+1}/{self.config.training.num_epochs}")
 
+                # Epoch start callback
+                for callback in self.callbacks:
+                    callback.on_epoch_begin(self, epoch)
+
+                # Training phase
+                self.model.train()
+                train_metrics = self._train_epoch(train_loader, epoch)
+
+                # Validation phase
+                self.model.eval()
+                val_metrics = self._validate(val_loader)
+
+                # Combine metrics
+                metrics = {
+                    **{f"train_{k}": v for k, v in train_metrics.items()},
+                    **{f"val_{k}": v for k, v in val_metrics.items()},
+                }
+
+                # Log metrics
+                self.logger.info(
+                    f"Epoch {epoch+1} - "
+                    + " - ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
+                )
+
+                # Epoch end callback
+                for callback in self.callbacks:
+                    callback.on_epoch_end(self, epoch, metrics)
+
+        except Exception as e:
+            self.logger.error(f"Training failed with error: {str(e)}")
+            raise
+        finally:
+            # Training end callback
             for callback in self.callbacks:
-                callback.on_epoch_begin(self, epoch)
-
-            # Training phase
-            self.model.train()
-            train_metrics = self._train_epoch(train_loader, epoch)
-
-            # Validation phase
-            self.model.eval()
-            val_metrics = self._validate(val_loader)
-
-            # Combine metrics
-            metrics = {
-                **{f"train_{k}": v for k, v in train_metrics.items()},
-                **{f"val_{k}": v for k, v in val_metrics.items()},
-            }
-
-            for callback in self.callbacks:
-                callback.on_epoch_end(self, epoch, metrics)
-
-        for callback in self.callbacks:
-            callback.on_train_end(self)
+                callback.on_train_end(self)
 
     def _train_epoch(self, train_loader, epoch):
         running_loss = 0.0
@@ -62,9 +93,10 @@ class ModelTrainer:
             for callback in self.callbacks:
                 callback.on_batch_begin(self, batch_idx)
 
-            if torch.cuda.is_available():
-                imageA, imageB = imageA.cuda(), imageB.cuda()
-                target = target.cuda()
+            # Move data to device
+            imageA, imageB, target = move_to_device(
+                (imageA, imageB, target), self.device
+            )
 
             # Forward pass
             outputs = self.model(imageA, imageB)
@@ -78,12 +110,13 @@ class ModelTrainer:
                 != 0,
             )
 
-            # Calculate metrics
-            with torch.no_grad():
-                batch_metrics = calculate_metrics(outputs, target)
+            # For metrics, use the final output if deep supervision is enabled
+            if isinstance(outputs, list):
+                outputs = outputs[-1]  # Use the final prediction for metrics
 
-            # Update running metrics
+            # Update metrics
             running_loss += loss.item()
+            batch_metrics = self._compute_metrics(outputs, target)
             for k, v in batch_metrics.items():
                 running_metrics[k] = running_metrics.get(k, 0.0) + v
 
@@ -100,7 +133,6 @@ class ModelTrainer:
                     self, batch_idx, {"loss": loss.item(), **batch_metrics}
                 )
 
-        # Calculate epoch metrics
         num_batches = len(train_loader)
         epoch_metrics = {
             "loss": running_loss / num_batches,
@@ -115,20 +147,25 @@ class ModelTrainer:
         running_metrics = {}
 
         for imageA, imageB, target in tqdm(val_loader, desc="Validation"):
-            if torch.cuda.is_available():
-                imageA, imageB = imageA.cuda(), imageB.cuda()
-                target = target.cuda()
+            # Move data to device
+            imageA, imageB, target = move_to_device(
+                (imageA, imageB, target), self.device
+            )
 
+            # Forward pass
             outputs = self.model(imageA, imageB)
             loss = self.criterion(outputs, target)
 
-            batch_metrics = calculate_metrics(outputs, target)
+            # For metrics, use the final output if deep supervision is enabled
+            if isinstance(outputs, list):
+                outputs = outputs[-1]  # Use the final prediction for metrics
 
+            # Update metrics
             running_loss += loss.item()
+            batch_metrics = self._compute_metrics(outputs, target)
             for k, v in batch_metrics.items():
                 running_metrics[k] = running_metrics.get(k, 0.0) + v
 
-        # Calculate validation metrics
         num_batches = len(val_loader)
         val_metrics = {
             "loss": running_loss / num_batches,
@@ -136,3 +173,59 @@ class ModelTrainer:
         }
 
         return val_metrics
+
+    def _compute_metrics(self, outputs, target):
+        """
+        Compute metrics for a batch of predictions
+
+        Args:
+            outputs: Model predictions (B, C, H, W)
+            target: One-hot encoded ground truth (B, C, H, W)
+        """
+        with torch.no_grad():
+            # Convert predictions to class indices
+            preds = outputs.argmax(dim=1)
+            # Convert target from one-hot to class indices
+            target_indices = target.argmax(dim=1)
+
+            # Calculate accuracy
+            accuracy = (preds == target_indices).float().mean().item()
+
+            # Calculate IoU for each class
+            num_classes = outputs.size(1)
+            ious = []
+            for cls in range(num_classes):
+                pred_mask = preds == cls
+                target_mask = target_indices == cls
+                intersection = (pred_mask & target_mask).float().sum()
+                union = (pred_mask | target_mask).float().sum()
+                iou = (intersection + 1e-6) / (union + 1e-6)
+                ious.append(iou.item())
+
+            mean_iou = sum(ious) / len(ious)
+
+            # Calculate F1 score
+            pred_softmax = F.softmax(outputs, dim=1)
+            f1_scores = []
+            for cls in range(num_classes):
+                pred_cls = (pred_softmax[:, cls] > 0.5).float()
+                target_cls = target[:, cls].float()
+
+                tp = (pred_cls * target_cls).sum()
+                fp = (pred_cls * (1 - target_cls)).sum()
+                fn = ((1 - pred_cls) * target_cls).sum()
+
+                precision = tp / (tp + fp + 1e-6)
+                recall = tp / (tp + fn + 1e-6)
+                f1 = 2 * precision * recall / (precision + recall + 1e-6)
+                f1_scores.append(f1.item())
+
+            mean_f1 = sum(f1_scores) / len(f1_scores)
+
+            return {
+                "accuracy": accuracy,
+                "iou": mean_iou,
+                "f1": mean_f1,
+                **{f"iou_class_{i}": iou for i, iou in enumerate(ious)},
+                **{f"f1_class_{i}": f1 for i, f1 in enumerate(f1_scores)},
+            }
