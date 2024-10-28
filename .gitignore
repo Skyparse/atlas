@@ -138,5 +138,5 @@ src/data/.DS_Store
 src/output/
 
 # Ignore all data files but keep the directory structure
-src/data/**
-!src/data/**/
+src/data/*/**
+!src/data/*/**/
