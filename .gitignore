@@ -132,11 +132,11 @@ cython_debug/
 .vscode/
 
 # Custom directories
-atlas/__pycache__/
-atlas/.DS_Store
-atlas/data/.DS_Store
-atlas/output/
+src/__pycache__/
+src/.DS_Store
+src/data/.DS_Store
+src/output/
 
 # Ignore all data files but keep the directory structure
-atlas/data/**
-!atlas/data/**/
+src/data/**
+!src/data/**/
