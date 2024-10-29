@@ -9,15 +9,6 @@ from torch.nn import functional as F
 
 class ModelTrainer:
     def __init__(self, model, config, callbacks, logger):
-        """
-        Initialize ModelTrainer
-
-        Args:
-            model: The model to train
-            config: TrainExperimentConfig containing all configuration
-            callbacks: List of callbacks for training events
-            logger: Logger instance
-        """
         self.model = model
         self.config = config
         self.callbacks = callbacks
@@ -30,14 +21,6 @@ class ModelTrainer:
         self.logger.info(f"Using device: {self.device}")
 
     def train(self, train_loader, val_loader):
-        """
-        Main training loop
-
-        Args:
-            train_loader: DataLoader for training data
-            val_loader: DataLoader for validation data
-        """
-        self.logger.info("Starting training")
 
         # Training start callback
         for callback in self.callbacks:
@@ -56,21 +39,34 @@ class ModelTrainer:
                 self.model.train()
                 train_metrics = self._train_epoch(train_loader, epoch)
 
-                # Validation phase
-                self.model.eval()
-                val_metrics = self._validate(val_loader)
-
-                # Combine metrics
-                metrics = {
-                    **{f"train_{k}": v for k, v in train_metrics.items()},
-                    **{f"val_{k}": v for k, v in val_metrics.items()},
-                }
-
-                # Log metrics
+                # Log training metrics
                 self.logger.info(
-                    f"Epoch {epoch+1} - "
-                    + " - ".join(f"{k}: {v:.4f}" for k, v in metrics.items())
+                    f"Epoch {epoch+1} - Train: "
+                    + " - ".join(f"{k}: {v:.4f}" for k, v in train_metrics.items())
                 )
+
+                # Validation phase if it's evaluation epoch
+                should_evaluate = (
+                    epoch + 1 == self.config.training.num_epochs  # Last epoch
+                    or (
+                        self.config.training.eval_frequency > 0  # Regular evaluation
+                        and (epoch + 1) % self.config.training.eval_frequency == 0
+                    )
+                )
+
+                metrics = {"train_" + k: v for k, v in train_metrics.items()}
+
+                if should_evaluate:
+                    self.logger.info(f"Performing evaluation at epoch {epoch+1}")
+                    self.model.eval()
+                    val_metrics = self._validate(val_loader)
+                    metrics.update({f"val_{k}": v for k, v in val_metrics.items()})
+
+                    # Log validation metrics
+                    self.logger.info(
+                        f"Epoch {epoch+1} - Validation: "
+                        + " - ".join(f"{k}: {v:.4f}" for k, v in val_metrics.items())
+                    )
 
                 # Epoch end callback
                 for callback in self.callbacks:
@@ -183,9 +179,16 @@ class ModelTrainer:
             target: One-hot encoded ground truth (B, C, H, W)
         """
         with torch.no_grad():
-            # Convert predictions to class indices
+            # Resize predictions to match target size
+            outputs = F.interpolate(
+                outputs, size=target.shape[2:], mode="bilinear", align_corners=False
+            )
+
+            # Convert predictions to class probabilities
+            pred_softmax = F.softmax(outputs, dim=1)
+
+            # Get class indices
             preds = outputs.argmax(dim=1)
-            # Convert target from one-hot to class indices
             target_indices = target.argmax(dim=1)
 
             # Calculate accuracy
@@ -194,7 +197,10 @@ class ModelTrainer:
             # Calculate IoU for each class
             num_classes = outputs.size(1)
             ious = []
+            f1_scores = []
+
             for cls in range(num_classes):
+                # IoU calculation
                 pred_mask = preds == cls
                 target_mask = target_indices == cls
                 intersection = (pred_mask & target_mask).float().sum()
@@ -202,12 +208,7 @@ class ModelTrainer:
                 iou = (intersection + 1e-6) / (union + 1e-6)
                 ious.append(iou.item())
 
-            mean_iou = sum(ious) / len(ious)
-
-            # Calculate F1 score
-            pred_softmax = F.softmax(outputs, dim=1)
-            f1_scores = []
-            for cls in range(num_classes):
+                # F1 score calculation
                 pred_cls = (pred_softmax[:, cls] > 0.5).float()
                 target_cls = target[:, cls].float()
 
@@ -220,6 +221,7 @@ class ModelTrainer:
                 f1 = 2 * precision * recall / (precision + recall + 1e-6)
                 f1_scores.append(f1.item())
 
+            mean_iou = sum(ious) / len(ious)
             mean_f1 = sum(f1_scores) / len(f1_scores)
 
             return {

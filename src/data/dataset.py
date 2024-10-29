@@ -1,23 +1,42 @@
 # src/data/dataset.py
 import torch
-from torch.utils.data import Dataset, random_split
+from torch.utils.data import Dataset, Subset
 import numpy as np
 from pathlib import Path
+from sklearn.model_selection import train_test_split
+from typing import Tuple, Optional
+import logging
 
 
 class ChangeDetectionDataset(Dataset):
-    def __init__(self, xA_path, xB_path, mask_path=None, transform=None):
+    """Dataset for change detection with efficient data handling"""
+
+    def __init__(
+        self,
+        xA: np.ndarray,
+        xB: np.ndarray,
+        masks: Optional[np.ndarray] = None,
+        transform=None,
+        cache_size: int = 1000,
+    ):
         """
+        Initialize the dataset
+
         Args:
-            xA_path: Path to first timepoint images array
-            xB_path: Path to second timepoint images array
-            mask_path: Path to mask labels array (optional for prediction)
-            transform: Optional transform to be applied on images
+            xA: First timepoint images (B,C,H,W)
+            xB: Second timepoint images (B,C,H,W)
+            masks: Optional mask labels (B,C,H,W)
+            transform: Optional transforms to apply
+            cache_size: Number of items to cache in memory
         """
-        self.xA = np.load(xA_path)
-        self.xB = np.load(xB_path)
-        self.masks = np.load(mask_path) if mask_path else None
+        self.xA = torch.from_numpy(xA).float()
+        self.xB = torch.from_numpy(xB).float()
+        self.masks = torch.from_numpy(masks).float() if masks is not None else None
         self.transform = transform
+
+        # Initialize cache
+        self.cache = {}
+        self.cache_size = cache_size
 
         # Validate shapes
         assert len(self.xA) == len(self.xB), "Image pairs must have same length"
@@ -25,60 +44,103 @@ class ChangeDetectionDataset(Dataset):
             assert len(self.xA) == len(
                 self.masks
             ), "Images and masks must have same length"
-            assert len(self.masks.shape) == 4, "Masks must be one-hot encoded (B,C,H,W)"
+            assert len(self.masks.shape) == 4, "Masks must be 4D (B,C,H,W)"
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.xA)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, ...]:
+        # Check cache first
+        if idx in self.cache:
+            return self.cache[idx]
+
         # Get images
-        imageA = torch.from_numpy(self.xA[idx]).float()
-        imageB = torch.from_numpy(self.xB[idx]).float()
+        imageA = self.xA[idx]
+        imageB = self.xB[idx]
 
         # Apply transforms if any
         if self.transform:
             imageA = self.transform(imageA)
             imageB = self.transform(imageB)
 
-        # Handle masks
+        # Prepare output
         if self.masks is not None:
-            # Keep masks in one-hot format (B,C,H,W)
-            mask = torch.from_numpy(self.masks[idx]).float()
-            return imageA, imageB, mask
+            output = (imageA, imageB, self.masks[idx])
+        else:
+            output = (imageA, imageB)
 
-        return imageA, imageB
+        # Update cache
+        if len(self.cache) >= self.cache_size:
+            # Remove oldest item
+            self.cache.pop(next(iter(self.cache)))
+        self.cache[idx] = output
+
+        return output
 
 
-def create_train_val_datasets(
-    xA_path, xB_path, mask_path, val_split=0.2, transform=None
-):
+def create_train_val_datasets(config) -> Tuple[Dataset, Dataset]:
     """
-    Create training and validation datasets from numpy arrays.
+    Create training and validation datasets
 
     Args:
-        xA_path: path to first timepoint images array
-        xB_path: path to second timepoint images array
-        mask_path: path to mask labels array
-        val_split: fraction of data to use for validation
-        transform: optional transform to apply to images
+        config: Configuration object containing data paths and settings
+
+    Returns:
+        train_dataset, val_dataset: Training and validation datasets
     """
-    # Create full dataset
-    full_dataset = ChangeDetectionDataset(xA_path, xB_path, mask_path, transform)
+    logger = logging.getLogger(__name__)
 
-    # Calculate split sizes
-    val_size = int(len(full_dataset) * val_split)
-    train_size = len(full_dataset) - val_size
+    # Load data
+    logger.info("Loading datasets...")
+    try:
+        xA = np.load(config.data.xA_path)
+        xB = np.load(config.data.xB_path)
+        masks = np.load(config.data.mask_path)
 
-    # Split dataset
-    train_dataset, val_dataset = random_split(
-        full_dataset,
-        [train_size, val_size],
-        generator=torch.Generator().manual_seed(42),
+        logger.info(
+            f"Loaded data shapes - xA: {xA.shape}, xB: {xB.shape}, masks: {masks.shape}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to load data: {str(e)}")
+        raise
+
+    # Create indices for split
+    indices = np.arange(len(xA))
+    train_indices, val_indices = train_test_split(
+        indices, test_size=config.data.val_split, random_state=config.training.seed
+    )
+
+    # Create the full dataset
+    full_dataset = ChangeDetectionDataset(
+        xA=xA,
+        xB=xB,
+        masks=masks,
+        cache_size=1000,  # Adjust based on your memory constraints
+    )
+
+    # Create train and validation datasets
+    train_dataset = Subset(full_dataset, train_indices)
+    val_dataset = Subset(full_dataset, val_indices)
+
+    logger.info(
+        f"Created datasets - Training: {len(train_dataset)}, Validation: {len(val_dataset)}"
     )
 
     return train_dataset, val_dataset
 
 
-def create_prediction_dataset(xA_path, xB_path, transform=None):
-    """Create dataset for prediction only (no masks required)."""
-    return ChangeDetectionDataset(xA_path, xB_path, mask_path=None, transform=transform)
+def create_prediction_dataset(xA_path: str, xB_path: str) -> Dataset:
+    """
+    Create dataset for prediction (no masks)
+
+    Args:
+        xA_path: Path to first timepoint images
+        xB_path: Path to second timepoint images
+
+    Returns:
+        Dataset for prediction
+    """
+    xA = np.load(xA_path)
+    xB = np.load(xB_path)
+
+    return ChangeDetectionDataset(xA=xA, xB=xB, masks=None, cache_size=1000)

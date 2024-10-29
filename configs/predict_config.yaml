@@ -1,28 +1,28 @@
 # configs/predict_config.yaml
 model:
-    in_channels: 3
-    num_classes: 2
+    in_channels: 6
+    num_classes: 1
     base_channel: 32
-    depth: 5
-    use_transformer: true
+    depth: 4
+    use_transformer: false
     transformer_heads: 8
     transformer_dim_head: 64
     transformer_dropout: 0.1
-    use_fpn: true
-    fpn_channels: 256
-    deep_supervision: false
+    use_fpn: false
+    fpn_channels: 64
+    deep_supervision: true
 
 prediction:
-    weights_path: "experiments/mineops_change_detection_latest/checkpoints/best_model.pt"
+    weights_path: "experiments/mineops_change_detection_20241029_103652/checkpoints/best_model.pt"
     output_dir: "predictions"
-    batch_size: 8
+    batch_size: 2
     parallel: false
     save_probabilities: true
 
 data:
     # Explicit paths to test data files
-    xA_path: "/data/02_model_input/mineops_cd_xA.npy"
-    xB_path: "/data/02_model_input/mineops_cd_xB.npy"
+    xA_path: "src/data/02_model_input/mineops_cd_xA.npy"
+    xB_path: "src/data/02_model_input/mineops_cd_xB.npy"
     normalization:
         mean: [0.485, 0.456, 0.406]
         std: [0.229, 0.224, 0.225]

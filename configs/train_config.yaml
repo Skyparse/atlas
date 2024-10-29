@@ -2,26 +2,27 @@
 model:
     in_channels: 6
     num_classes: 1
-    base_channel: 12
-    depth: 3
-    use_transformer: true
-    transformer_heads: 4
-    transformer_dim_head: 24
+    base_channel: 32
+    depth: 4
+    use_transformer: false
+    transformer_heads: 8
+    transformer_dim_head: 64
     transformer_dropout: 0.1
-    use_fpn: true
-    fpn_channels: 32
+    use_fpn: false
+    fpn_channels: 64
     deep_supervision: true
 
 training:
     seed: 42
-    num_epochs: 100
+    num_epochs: 50
     batch_size: 2
     learning_rate: 0.001
     weight_decay: 0.01
-    gradient_accumulation_steps: 1
+    gradient_accumulation_steps: 4
     max_grad_norm: 1.0
     mixed_precision: false
     parallel: false
+    eval_frequency: 5
 
 data:
     # Explicit paths to data files

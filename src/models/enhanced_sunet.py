@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .components.attention import ChannelAttention, SpatialAttention
+from .components.attention import CBAM
 from .components.transformer import TransformerBlock
 from .components.fpn import FPN
 
@@ -53,13 +53,6 @@ class EnhancedSNUNet(nn.Module):
                 drop=config.transformer_dropout,
             )
 
-        # FPN if configured
-        if config.use_fpn:
-            self.fpn = FPN(self.channels, config.fpn_channels)
-            out_channels = config.fpn_channels
-        else:
-            out_channels = self.channels[0]
-
         # Decoder
         self.decoder_blocks = nn.ModuleList()
         self.upsamples = nn.ModuleList()
@@ -74,16 +67,26 @@ class EnhancedSNUNet(nn.Module):
                 ConvBlock(self.channels[i], self.channels[i - 1])
             )
 
-        # Attention modules
-        self.channel_attention = ChannelAttention(out_channels)
-        self.spatial_attention = SpatialAttention()
+        # Calculate final number of channels
+        if config.use_fpn:
+            self.fpn = FPN(self.channels, config.fpn_channels)
+            self.final_channels = config.fpn_channels
+        else:
+            # When FPN is not used, we use the channels from the last level
+            self.final_channels = self.channels[-1]
+
+        # Initialize attention with the correct number of channels
+        self.attention = CBAM(
+            channels=self.final_channels, reduction_ratio=4, spatial_kernel_size=7
+        )
 
         # Final layers
         self.final_conv = nn.Sequential(
-            nn.Conv2d(out_channels, config.num_classes, kernel_size=1),
+            nn.Conv2d(self.final_channels, config.num_classes, kernel_size=1),
             nn.BatchNorm2d(config.num_classes),
         )
 
+        # Deep supervision layers if configured
         if config.deep_supervision and config.use_fpn:
             self.deep_outputs = nn.ModuleList(
                 [
@@ -91,6 +94,8 @@ class EnhancedSNUNet(nn.Module):
                     for _ in range(config.depth)
                 ]
             )
+
+        self._initialize_weights()
 
     def forward(self, xA, xB):
         # Initial convolution
@@ -129,19 +134,27 @@ class EnhancedSNUNet(nn.Module):
             fpn_features = self.fpn(combined_features)
 
             if self.config.deep_supervision and self.training:
-                return [
-                    output_conv(feat)
+                outputs = [
+                    output_conv(
+                        F.interpolate(
+                            feat,
+                            size=xA.shape[2:],
+                            mode="bilinear",
+                            align_corners=False,
+                        )
+                    )
                     for feat, output_conv in zip(fpn_features, self.deep_outputs)
                 ]
+                return outputs
 
-            x = fpn_features[0]  # Use the finest resolution feature map
+            x = fpn_features[0]
 
         # Apply attention
-        x = self.channel_attention(x)
-        x = self.spatial_attention(x)
+        x = self.attention(x)
 
         # Final prediction
         x = self.final_conv(x)
+        x = F.interpolate(x, size=xA.shape[2:], mode="bilinear", align_corners=False)
 
         return x
 

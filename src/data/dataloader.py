@@ -1,61 +1,138 @@
 # src/data/dataloader.py
 import torch
-import queue
-import threading
 from torch.utils.data import DataLoader
+import logging
+from typing import Tuple
 
 
-class PrefetchLoader:
-    def __init__(self, loader, device):
-        self.loader = loader
-        self.device = device
-        self.stream = torch.cuda.Stream()
-        self.queue = queue.Queue(maxsize=2)
-        self.worker = threading.Thread(target=self._worker)
-        self.worker.daemon = True
-        self.worker.start()
+class PrefetchDataLoader:
+    """Custom DataLoader with prefetching for faster data loading"""
 
-    def _worker(self):
-        for batch in self.loader:
-            self.queue.put(batch)
-        self.queue.put(None)
+    def __init__(
+        self,
+        dataset,
+        batch_size,
+        shuffle=True,
+        num_workers=4,
+        pin_memory=True,
+        prefetch_factor=2,
+    ):
+        self.loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            prefetch_factor=prefetch_factor,
+        )
 
     def __iter__(self):
-        next_batch = self.queue.get()
-        while next_batch is not None:
-            with torch.cuda.stream(self.stream):
-                next_batch = tuple(
-                    t.to(self.device, non_blocking=True) for t in next_batch
-                )
-            torch.cuda.current_stream().wait_stream(self.stream)
-            yield next_batch
-            next_batch = self.queue.get()
+        return iter(self.loader)
 
     def __len__(self):
         return len(self.loader)
 
 
-def create_dataloaders(dataset, training_config: dict):
+def create_dataloaders(
+    train_dataset, val_dataset, config, num_workers: int = None, pin_memory: bool = None
+) -> Tuple[PrefetchDataLoader, PrefetchDataLoader]:
     """
-    Create a dataloader with the specified configuration.
+    Create optimized dataloaders for training and validation
 
     Args:
-        dataset: The dataset to create a loader for
-        training_config: Dictionary containing training configuration
-    """
-    # Extract parameters from config
-    batch_size = training_config["batch_size"]
-    num_workers = training_config.get("num_workers", 4)
+        train_dataset: Training dataset
+        val_dataset: Validation dataset
+        config: Training configuration
+        num_workers: Optional override for number of workers
+        pin_memory: Optional override for pin_memory
 
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
+    Returns:
+        train_loader, val_loader: Tuple of train and validation dataloaders
+    """
+    logger = logging.getLogger(__name__)
+
+    # Use config values or defaults
+    num_workers = num_workers if num_workers is not None else 4
+    pin_memory = pin_memory if pin_memory is not None else True
+
+    # Adjust num_workers based on system
+    if num_workers > 0 and not hasattr(torch, "get_num_threads"):
+        logger.warning(
+            "PyTorch was not built with parallel support. Setting num_workers to 0"
+        )
+        num_workers = 0
+
+    # Create train loader
+    train_loader = PrefetchDataLoader(
+        dataset=train_dataset,
+        batch_size=config.training.batch_size,
         shuffle=True,
         num_workers=num_workers,
-        pin_memory=True,
+        pin_memory=pin_memory,
+        prefetch_factor=2,
     )
 
-    if torch.cuda.is_available():
-        loader = PrefetchLoader(loader, torch.device("cuda"))
+    # Create validation loader
+    val_loader = PrefetchDataLoader(
+        dataset=val_dataset,
+        batch_size=config.training.batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=2,
+    )
 
-    return loader
+    logger.info(
+        f"Created dataloaders with {num_workers} workers and pin_memory={pin_memory}"
+    )
+    logger.info(
+        f"Training batches: {len(train_loader)}, Validation batches: {len(val_loader)}"
+    )
+
+    return train_loader, val_loader
+
+
+def create_prediction_dataloader(
+    dataset, config, num_workers: int = None, pin_memory: bool = None
+) -> PrefetchDataLoader:
+    """
+    Create optimized dataloader for prediction
+
+    Args:
+        dataset: Prediction dataset
+        config: Prediction configuration
+        num_workers: Optional override for number of workers
+        pin_memory: Optional override for pin_memory
+
+    Returns:
+        PrefetchDataLoader for prediction
+    """
+    logger = logging.getLogger(__name__)
+
+    # Use config values or defaults
+    num_workers = num_workers if num_workers is not None else 4
+    pin_memory = pin_memory if pin_memory is not None else True
+
+    # Adjust num_workers based on system
+    if num_workers > 0 and not hasattr(torch, "get_num_threads"):
+        logger.warning(
+            "PyTorch was not built with parallel support. Setting num_workers to 0"
+        )
+        num_workers = 0
+
+    # Create prediction loader
+    predict_loader = PrefetchDataLoader(
+        dataset=dataset,
+        batch_size=config.prediction.batch_size,
+        shuffle=False,  # No shuffling needed for prediction
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        prefetch_factor=2,
+    )
+
+    logger.info(
+        f"Created prediction dataloader with {num_workers} workers and pin_memory={pin_memory}"
+    )
+    logger.info(f"Prediction batches: {len(predict_loader)}")
+
+    return predict_loader

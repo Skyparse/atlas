@@ -1,12 +1,12 @@
 # src/utils/config.py
 from dataclasses import dataclass
-from typing import Optional, List
+from typing import List, Optional
 from pathlib import Path
+from typing import Tuple
 
 
 @dataclass
 class ModelConfig:
-    # Model architecture parameters
     in_channels: int
     num_classes: int
     base_channel: int
@@ -31,6 +31,7 @@ class TrainingConfig:
     max_grad_norm: float
     mixed_precision: bool
     parallel: bool
+    eval_frequency: int = 1
 
 
 @dataclass
@@ -40,12 +41,27 @@ class NormalizationConfig:
 
 
 @dataclass
-class DataConfig:
+class BaseDataConfig:
+    """Base data configuration shared between training and prediction"""
+
     xA_path: str
     xB_path: str
-    mask_path: Optional[str]
-    val_split: float
     normalization: NormalizationConfig
+
+
+@dataclass
+class TrainingDataConfig(BaseDataConfig):
+    """Data configuration for training"""
+
+    mask_path: str
+    val_split: float
+
+
+@dataclass
+class PredictionDataConfig(BaseDataConfig):
+    """Data configuration for prediction"""
+
+    mask_path: Optional[str] = None
 
 
 @dataclass
@@ -59,15 +75,16 @@ class PredictionConfig:
     weights_path: str
     output_dir: str
     batch_size: int
-    parallel: bool
-    save_probabilities: bool
+    parallel: bool = False
+    save_individual: bool = False
+    save_probabilities: bool = True
 
 
 @dataclass
 class TrainExperimentConfig:
     model: ModelConfig
     training: TrainingConfig
-    data: DataConfig
+    data: TrainingDataConfig
     output: OutputConfig
 
     @classmethod
@@ -75,7 +92,7 @@ class TrainExperimentConfig:
         return cls(
             model=ModelConfig(**config_dict["model"]),
             training=TrainingConfig(**config_dict["training"]),
-            data=DataConfig(
+            data=TrainingDataConfig(
                 **{
                     **config_dict["data"],
                     "normalization": NormalizationConfig(
@@ -87,7 +104,6 @@ class TrainExperimentConfig:
         )
 
     def validate(self):
-        """Validate configuration parameters"""
         # Model validations
         assert self.model.in_channels > 0, "in_channels must be positive"
         assert self.model.num_classes > 0, "num_classes must be positive"
@@ -101,6 +117,53 @@ class TrainExperimentConfig:
         assert (
             self.training.gradient_accumulation_steps > 0
         ), "gradient_accumulation_steps must be positive"
+        assert self.training.eval_frequency >= 0, "eval_frequency must be non-negative"
+
+        # Data validations
+        assert Path(
+            self.data.xA_path
+        ).exists(), f"xA_path does not exist: {self.data.xA_path}"
+        assert Path(
+            self.data.xB_path
+        ).exists(), f"xB_path does not exist: {self.data.xB_path}"
+        assert Path(
+            self.data.mask_path
+        ).exists(), f"mask_path does not exist: {self.data.mask_path}"
+        assert 0 < self.data.val_split < 1, "val_split must be between 0 and 1"
+
+
+@dataclass
+class PredictExperimentConfig:
+    model: ModelConfig
+    prediction: PredictionConfig
+    data: PredictionDataConfig
+
+    @classmethod
+    def from_dict(cls, config_dict: dict) -> "PredictExperimentConfig":
+        return cls(
+            model=ModelConfig(**config_dict["model"]),
+            prediction=PredictionConfig(**config_dict["prediction"]),
+            data=PredictionDataConfig(
+                **{
+                    **config_dict["data"],
+                    "normalization": NormalizationConfig(
+                        **config_dict["data"]["normalization"]
+                    ),
+                }
+            ),
+        )
+
+    def validate(self):
+        # Model validations
+        assert self.model.in_channels > 0, "in_channels must be positive"
+        assert self.model.num_classes > 0, "num_classes must be positive"
+        assert self.model.base_channel > 0, "base_channel must be positive"
+        assert self.model.depth > 0, "depth must be positive"
+
+        # Prediction validations
+        weights_path = Path(self.prediction.weights_path)
+        assert weights_path.exists(), f"Weights file not found: {weights_path}"
+        assert self.prediction.batch_size > 0, "batch_size must be positive"
 
         # Data validations
         assert Path(
@@ -113,50 +176,78 @@ class TrainExperimentConfig:
             assert Path(
                 self.data.mask_path
             ).exists(), f"mask_path does not exist: {self.data.mask_path}"
-        assert 0 < self.data.val_split < 1, "val_split must be between 0 and 1"
 
 
 @dataclass
-class PredictExperimentConfig:
-    model: ModelConfig
-    prediction: PredictionConfig
-    data: DataConfig
+class VisualizationStyle:
+    """Configuration for visualization styling"""
+
+    cmap: str = "hot"  # Colormap for prediction masks
+    overlay_alpha: float = 0.5  # Transparency for overlays
+    overlay_color: Tuple[float, float, float] = (1, 0, 0)  # RGB color for overlays
+    figure_size: Tuple[int, int] = (15, 15)  # Size of individual figures
+    dpi: int = 300  # DPI for saved figures
+
+
+@dataclass
+class VisualizationOutput:
+    """Configuration for visualization output"""
+
+    save_dir: str  # Directory to save visualizations
+    num_samples: int = 10  # Number of samples to visualize
+    save_individual: bool = True  # Save individual sample visualizations
+    save_summary: bool = True  # Save summary figure
+    save_format: str = "png"  # Format for saved figures
+    create_animations: bool = False  # Create GIF animations of the change
+
+
+@dataclass
+class InputPaths:
+    """Paths to input data"""
+
+    predictions_path: str  # Path to prediction .npy file
+    imageA_path: str  # Path to first timepoint images
+    imageB_path: str  # Path to second timepoint images
+    mask_path: Optional[str] = None  # Optional path to ground truth masks
+
+
+@dataclass
+class VisualizationConfig:
+    """Main configuration for visualization"""
+
+    input: InputPaths
+    output: VisualizationOutput
+    style: VisualizationStyle = VisualizationStyle()
 
     @classmethod
-    def from_dict(cls, config_dict: dict) -> "PredictExperimentConfig":
+    def from_dict(cls, config_dict: dict) -> "VisualizationConfig":
         return cls(
-            model=ModelConfig(**config_dict["model"]),
-            prediction=PredictionConfig(**config_dict["prediction"]),
-            data=DataConfig(
-                **{
-                    **config_dict["data"],
-                    "normalization": NormalizationConfig(
-                        **config_dict["data"]["normalization"]
-                    ),
-                    "mask_path": None,
-                    "val_split": 0.0,  # Not used in prediction
-                }
-            ),
+            input=InputPaths(**config_dict["input"]),
+            output=VisualizationOutput(**config_dict["output"]),
+            style=VisualizationStyle(**config_dict.get("style", {})),
         )
 
     def validate(self):
-        """Validate configuration parameters"""
-        # Model validations
-        assert self.model.in_channels > 0, "in_channels must be positive"
-        assert self.model.num_classes > 0, "num_classes must be positive"
-        assert self.model.base_channel > 0, "base_channel must be positive"
-        assert self.model.depth > 0, "depth must be positive"
+        """Validate visualization configuration"""
+        # Validate input paths
+        for path_name, path in {
+            "predictions": self.input.predictions_path,
+            "imageA": self.input.imageA_path,
+            "imageB": self.input.imageB_path,
+        }.items():
+            if not Path(path).exists():
+                raise FileNotFoundError(f"{path_name} file not found: {path}")
 
-        # Prediction validations
-        assert self.prediction.batch_size > 0, "batch_size must be positive"
-        assert Path(
-            self.prediction.weights_path
-        ).exists(), f"weights_path does not exist: {self.prediction.weights_path}"
+        if self.input.mask_path and not Path(self.input.mask_path).exists():
+            raise FileNotFoundError(f"Mask file not found: {self.input.mask_path}")
 
-        # Data validations
-        assert Path(
-            self.data.xA_path
-        ).exists(), f"xA_path does not exist: {self.data.xA_path}"
-        assert Path(
-            self.data.xB_path
-        ).exists(), f"xB_path does not exist: {self.data.xB_path}"
+        # Validate style parameters
+        assert (
+            0 <= self.style.overlay_alpha <= 1
+        ), "overlay_alpha must be between 0 and 1"
+        for color in self.style.overlay_color:
+            assert 0 <= color <= 1, "overlay_color values must be between 0 and 1"
+
+        # Validate output parameters
+        assert self.output.num_samples > 0, "num_samples must be positive"
+        assert self.style.dpi > 0, "dpi must be positive"

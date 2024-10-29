@@ -1,0 +1,21 @@
+# configs/visualize_config.yaml
+input:
+    predictions_path: "predictions/20241029_114806/predictions.npy"
+    imageA_path: "src/data/02_model_input/mineops_cd_xA.npy"
+    imageB_path: "src/data/02_model_input/mineops_cd_xB.npy"
+    mask_path: "src/data/02_model_input/mineops_cd_y.npy" # Optional ground truth masks
+
+output:
+    save_dir: "visualizations"
+    num_samples: 10
+    save_individual: true
+    save_summary: true
+    save_format: "png"
+    create_animations: false
+
+style:
+    cmap: "hot" # Options: hot, jet, viridis, etc.
+    overlay_alpha: 0.5
+    overlay_color: [1.0, 0.0, 0.0] # RGB values (red in this case)
+    figure_size: [15, 15]
+    dpi: 300

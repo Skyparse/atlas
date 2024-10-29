@@ -10,13 +10,7 @@ class BoundaryAwareLoss(nn.Module):
         self.weight = weight
 
     def compute_boundary_map(self, target):
-        """
-        Compute boundary map from one-hot encoded target mask
-
-        Args:
-            target: One-hot encoded target (B, C, H, W)
-        """
-        # Convert to class indices for boundary computation
+        """Compute boundary map from one-hot encoded target mask"""
         target_indices = target.argmax(dim=1, keepdim=True).float()
 
         sobel_x = (
@@ -38,20 +32,25 @@ class BoundaryAwareLoss(nn.Module):
             pred: Model predictions (B, C, H, W) or list of predictions
             target: One-hot encoded ground truth (B, C, H, W)
         """
-        # Convert target from one-hot to class indices
-        target_indices = target.argmax(dim=1)
+        target_indices = target.argmax(dim=1)  # Convert to class indices
 
-        # Handle deep supervision case
         if isinstance(pred, list):
             losses = []
             for p in pred:
+                # Resize predictions to match target size
+                p = F.interpolate(
+                    p, size=target.shape[2:], mode="bilinear", align_corners=False
+                )
                 loss = F.cross_entropy(p, target_indices, reduction="none")
                 boundary_map = self.compute_boundary_map(target)
                 weighted_loss = (loss * boundary_map.squeeze(1)).mean()
                 losses.append(weighted_loss)
             return sum(losses) / len(losses)
 
-        # Single output case
+        # Resize single prediction to match target size
+        pred = F.interpolate(
+            pred, size=target.shape[2:], mode="bilinear", align_corners=False
+        )
         loss = F.cross_entropy(pred, target_indices, reduction="none")
         boundary_map = self.compute_boundary_map(target)
         weighted_loss = (loss * boundary_map.squeeze(1)).mean()
@@ -70,9 +69,12 @@ class DiceLoss(nn.Module):
             pred: Model predictions (B, C, H, W)
             target: One-hot encoded ground truth (B, C, H, W)
         """
+        # Resize predictions to match target size
+        pred = F.interpolate(
+            pred, size=target.shape[2:], mode="bilinear", align_corners=False
+        )
         pred = F.softmax(pred, dim=1)
 
-        # Compute Dice score for each class
         intersection = (pred * target.float()).sum(dim=(2, 3))
         cardinality = pred.sum(dim=(2, 3)) + target.float().sum(dim=(2, 3))
         dice = (2.0 * intersection + self.smooth) / (cardinality + self.smooth)
@@ -93,11 +95,6 @@ class CombinedLoss(nn.Module):
         self.dice_weight = dice_weight
 
     def forward(self, pred, target):
-        """
-        Args:
-            pred: Model predictions (B, C, H, W) or list of predictions
-            target: One-hot encoded ground truth (B, C, H, W)
-        """
         return self.boundary_loss(pred, target) + self.dice_weight * self.dice_loss(
             pred, target
         )

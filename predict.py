@@ -4,100 +4,191 @@ import yaml
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+from datetime import datetime
+from typing import Optional
 
-from src.utils.config import ModelConfig
+from src.utils.config import PredictExperimentConfig
 from src.models.enhanced_sunet import EnhancedSNUNet
 from src.data.dataset import create_prediction_dataset
-from src.data.transforms import Compose, Normalize
 from src.utils.logger_visuals import setup_logger
-from src.data.dataloader import create_dataloaders
+from src.data.dataloader import create_prediction_dataloader
+
+
+def setup_device():
+    """Setup compute device"""
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+        device_name = torch.cuda.get_device_name(0)
+    elif torch.backends.mps.is_available():
+        device = torch.device("mps")
+        device_name = "Apple M-series GPU"
+    else:
+        device = torch.device("cpu")
+        device_name = "CPU"
+    return device, device_name
+
+
+def save_predictions(predictions: np.ndarray, path: Path, logger) -> None:
+    """Save prediction arrays with proper error handling"""
+    try:
+        np.save(path, predictions)
+        logger.info(f"Saved predictions to {path}")
+    except Exception as e:
+        logger.error(f"Failed to save predictions to {path}: {str(e)}")
+        raise
+
+
+def process_batch(model, batch, device) -> torch.Tensor:
+    """Process a single batch of data"""
+    imageA, imageB = [x.to(device) for x in batch]
+    with torch.no_grad():
+        outputs = model(imageA, imageB)
+        if isinstance(outputs, list):  # Handle deep supervision case
+            outputs = outputs[-1]  # Take final output
+    return outputs
+
+
+def load_model_weights(model, weights_path: Path, device, logger):
+    """
+    Load model weights safely from checkpoint file
+
+    Args:
+        model: Model instance to load weights into
+        weights_path: Path to weights file
+        device: Device to load weights to
+        logger: Logger instance
+
+    Returns:
+        Model with loaded weights
+    """
+    try:
+        logger.info(f"Loading weights from {weights_path}")
+
+        try:
+            # Try loading with weights_only first
+            checkpoint = torch.load(
+                weights_path, map_location=device, weights_only=True
+            )
+
+            # Handle both checkpoint dict and direct state dict
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                model.load_state_dict(checkpoint["model_state_dict"])
+                logger.info(
+                    f"Loaded checkpoint from epoch {checkpoint.get('epoch', 'unknown')}"
+                )
+            else:
+                model.load_state_dict(checkpoint)
+                logger.info("Loaded state dict directly")
+
+        except RuntimeError as e:
+            logger.warning(
+                "Failed to load with weights_only=True, attempting legacy loading..."
+            )
+            # Fallback for older checkpoints
+            checkpoint = torch.load(weights_path, map_location=device)
+            if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
+                model.load_state_dict(checkpoint["model_state_dict"])
+            else:
+                model.load_state_dict(checkpoint)
+            logger.info("Successfully loaded weights using legacy method")
+
+        return model
+
+    except Exception as e:
+        logger.error(f"Failed to load model weights: {str(e)}")
+        raise
 
 
 def predict():
-    # Load configuration
-    with open("configs/predict_config.yaml", "r") as f:
-        config_dict = yaml.safe_load(f)
+    # Initialize basic logger
+    logger = setup_logger("prediction", "INFO", Path("logs"))
 
-    # Extract paths and create output directory
-    predict_config = config_dict["prediction"]
-    data_config = config_dict["data"]
+    try:
+        # Load configuration
+        logger.info("Loading configuration...")
+        with open("configs/predict_config.yaml", "r") as f:
+            config_dict = yaml.safe_load(f)
 
-    # Validate input paths
-    for path_name in ["xA_path", "xB_path"]:
-        if not Path(data_config[path_name]).exists():
-            raise FileNotFoundError(f"Data file not found: {data_config[path_name]}")
+        # Create and validate config
+        config = PredictExperimentConfig.from_dict(config_dict)
+        config.validate()
 
-    if not Path(predict_config["weights_path"]).exists():
-        raise FileNotFoundError(
-            f"Weights file not found: {predict_config['weights_path']}"
+        # Setup output directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_dir = Path(config.prediction.output_dir) / timestamp
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Setup proper logger with file output
+        logger = setup_logger("prediction", "INFO", output_dir)
+
+        # Setup device
+        device, device_name = setup_device()
+        logger.info(f"Using device: {device_name}")
+
+        # Create dataset
+        logger.info("Creating prediction dataset...")
+        predict_dataset = create_prediction_dataset(
+            xA_path=config.data.xA_path,
+            xB_path=config.data.xB_path,
+        )
+        logger.info(f"Created dataset with {len(predict_dataset)} samples")
+
+        # Create dataloader
+        predict_loader = create_prediction_dataloader(
+            dataset=predict_dataset, config=config
         )
 
-    output_dir = Path(predict_config["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
+        # Create and setup model
+        logger.info("Loading model...")
+        model = EnhancedSNUNet(config.model)
 
-    # Setup logger
-    logger = setup_logger("prediction", "INFO", output_dir)
-    logger.info(f"Starting prediction using {predict_config['weights_path']}")
+        # Load weights
+        weights_path = Path(config.prediction.weights_path)
+        if not weights_path.exists():
+            raise FileNotFoundError(f"Weights file not found: {weights_path}")
 
-    # Create prediction dataset
-    predict_dataset = create_prediction_dataset(
-        xA_path=data_config["xA_path"],
-        xB_path=data_config["xB_path"],
-    )
+        # Load model weights safely
+        model = load_model_weights(model, weights_path, device, logger)
+        model = model.to(device)
 
-    logger.info(f"Created prediction dataset with {len(predict_dataset)} samples")
-
-    # Create dataloader
-    predict_loader = create_dataloaders(predict_dataset, predict_config)
-
-    # Create and setup model
-    model_config = ModelConfig.from_dict(config_dict["model"])
-    model = EnhancedSNUNet(model_config)
-
-    # Load weights
-    model.load_state_dict(torch.load(predict_config["weights_path"]))
-
-    if torch.cuda.is_available():
-        model = model.cuda()
-        if predict_config.get("parallel", False) and torch.cuda.device_count() > 1:
+        if config.prediction.parallel and torch.cuda.device_count() > 1:
             model = torch.nn.DataParallel(model)
 
-    model.eval()
+        model.eval()
 
-    # Perform prediction
-    predictions = []
-    try:
-        with torch.no_grad():
-            for batch_idx, (imageA, imageB) in enumerate(tqdm(predict_loader)):
-                if torch.cuda.is_available():
-                    imageA, imageB = imageA.cuda(), imageB.cuda()
+        # Perform prediction
+        logger.info("Starting prediction...")
+        predictions = []
 
-                # Forward pass
-                outputs = model(imageA, imageB)
+        try:
+            for batch in tqdm(predict_loader, desc="Predicting"):
+                outputs = process_batch(model, batch, device)
                 predictions.append(outputs.cpu().numpy())
 
-                # Save batch predictions
-                if predict_config.get("save_individual", False):
+                # Save individual predictions if requested
+                if config.prediction.save_individual:
                     for i, pred in enumerate(outputs):
-                        pred_path = output_dir / f"prediction_{batch_idx}_{i}.npy"
-                        np.save(pred_path, pred.cpu().numpy())
+                        save_predictions(
+                            pred.cpu().numpy(),
+                            output_dir / f"pred_{len(predictions)}_{i}.npy",
+                            logger,
+                        )
 
-        # Concatenate all predictions
-        predictions = np.concatenate(predictions, axis=0)
+            # Concatenate and save all predictions
+            all_predictions = np.concatenate(predictions, axis=0)
+            save_predictions(all_predictions, output_dir / "predictions.npy", logger)
 
-        # Save full predictions
-        output_path = output_dir / "predictions.npy"
-        np.save(output_path, predictions)
-        logger.info(f"Saved predictions to {output_path}")
+            # Generate and save confidence maps
+            if config.prediction.save_probabilities:
+                logger.info("Generating probability maps...")
+                probs = torch.softmax(torch.from_numpy(all_predictions), dim=1).numpy()
+                save_predictions(probs, output_dir / "probabilities.npy", logger)
 
-        # Calculate and save confidence maps if requested
-        if predict_config.get("save_confidence", False):
-            confidence_maps = torch.softmax(
-                torch.from_numpy(predictions), dim=1
-            ).numpy()
-            confidence_path = output_dir / "confidence_maps.npy"
-            np.save(confidence_path, confidence_maps)
-            logger.info(f"Saved confidence maps to {confidence_path}")
+            logger.info("Prediction completed successfully")
+
+        except Exception as e:
+            logger.error(f"Error during prediction: {str(e)}")
+            raise
 
     except Exception as e:
         logger.error(f"Prediction failed with error: {str(e)}")

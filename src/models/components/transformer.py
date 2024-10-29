@@ -4,7 +4,7 @@ import torch.nn as nn
 
 
 class MultiHeadSelfAttention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, attn_drop=0.0, proj_drop=0.0):
+    def __init__(self, dim, num_heads=2, qkv_bias=False, attn_drop=0.0, proj_drop=0.0):
         super().__init__()
         assert dim % num_heads == 0
 
