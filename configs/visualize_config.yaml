@@ -1,6 +1,11 @@
 # configs/visualize_config.yaml
+model:
+    in_channels: 6 # Number of input channels
+    num_classes: 1 # Number of classes in prediction
+    image_size: [512, 512] # Expected image resolution
+
 input:
-    predictions_path: "predictions/20241029_114806/predictions.npy"
+    predictions_path: "predictions/20241029_141318/predictions.npy"
     imageA_path: "src/data/02_model_input/mineops_cd_xA.npy"
     imageB_path: "src/data/02_model_input/mineops_cd_xB.npy"
     mask_path: "src/data/02_model_input/mineops_cd_y.npy" # Optional ground truth masks
@@ -14,8 +19,9 @@ output:
     create_animations: false
 
 style:
-    cmap: "hot" # Options: hot, jet, viridis, etc.
+    cmap: "hot"
     overlay_alpha: 0.5
-    overlay_color: [1.0, 0.0, 0.0] # RGB values (red in this case)
+    class_colors: # One color per class
+        - [1.0, 0.0, 0.0] # Class 0: Red
     figure_size: [15, 15]
     dpi: 300

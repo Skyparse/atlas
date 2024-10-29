@@ -45,6 +45,7 @@ def train():
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
+    DEBUG = False  # Set to True for debugging output
 
     try:
         # Load configuration
@@ -105,10 +106,20 @@ def train():
             MetricsHistory(logs_dir),
         ]
 
-        # Create trainer
         trainer = ModelTrainer(
             model=model, config=config, callbacks=callbacks, logger=logger
         )
+
+        if DEBUG:
+            # Run one batch to debug
+            for batch in train_loader:
+                imageA, imageB, target = [x.to(device) for x in batch]
+                outputs = model(imageA, imageB)
+                logger.info(
+                    f"Outputs shape: {outputs.shape if outputs is not None else None}"
+                )
+                logger.info(f"Target shape: {target.shape}")
+                break
 
         # Train model
         logger.info("Starting training...")

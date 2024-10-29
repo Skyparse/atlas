@@ -3,7 +3,7 @@ model:
     in_channels: 6
     num_classes: 1
     base_channel: 32
-    depth: 4
+    depth: 5
     use_transformer: false
     transformer_heads: 8
     transformer_dim_head: 64

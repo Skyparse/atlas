@@ -1,8 +1,7 @@
 # src/utils/config.py
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
 from pathlib import Path
-from typing import Tuple
 
 
 @dataclass
@@ -182,33 +181,61 @@ class PredictExperimentConfig:
 class VisualizationStyle:
     """Configuration for visualization styling"""
 
-    cmap: str = "hot"  # Colormap for prediction masks
-    overlay_alpha: float = 0.5  # Transparency for overlays
-    overlay_color: Tuple[float, float, float] = (1, 0, 0)  # RGB color for overlays
-    figure_size: Tuple[int, int] = (15, 15)  # Size of individual figures
-    dpi: int = 300  # DPI for saved figures
+    cmap: str = "hot"
+    overlay_alpha: float = 0.5
+    class_colors: List[Tuple[float, float, float]] = field(
+        default_factory=lambda: [
+            (1.0, 0.0, 0.0),  # Red
+            (0.0, 1.0, 0.0),  # Green
+            (0.0, 0.0, 1.0),  # Blue
+            (1.0, 1.0, 0.0),  # Yellow
+            (1.0, 0.0, 1.0),  # Magenta
+            (0.0, 1.0, 1.0),  # Cyan
+        ]
+    )
+    figure_size: Tuple[int, int] = (15, 15)
+    dpi: int = 300
+
+    @classmethod
+    def from_dict(cls, config_dict: dict) -> "VisualizationStyle":
+        # Handle the old overlay_color key if present
+        if "overlay_color" in config_dict:
+            config_dict["class_colors"] = [config_dict.pop("overlay_color")]
+        return cls(**config_dict)
 
 
 @dataclass
 class VisualizationOutput:
     """Configuration for visualization output"""
 
-    save_dir: str  # Directory to save visualizations
-    num_samples: int = 10  # Number of samples to visualize
-    save_individual: bool = True  # Save individual sample visualizations
-    save_summary: bool = True  # Save summary figure
-    save_format: str = "png"  # Format for saved figures
-    create_animations: bool = False  # Create GIF animations of the change
+    save_dir: str
+    num_samples: int = 10
+    save_individual: bool = True
+    save_summary: bool = True
+    save_format: str = "png"
+    create_animations: bool = False
+
+
+@dataclass
+class VisualizationOutput:
+    """Configuration for visualization output"""
+
+    save_dir: str
+    num_samples: int = 10
+    save_individual: bool = True
+    save_summary: bool = True
+    save_format: str = "png"
+    create_animations: bool = False
 
 
 @dataclass
 class InputPaths:
     """Paths to input data"""
 
-    predictions_path: str  # Path to prediction .npy file
-    imageA_path: str  # Path to first timepoint images
-    imageB_path: str  # Path to second timepoint images
-    mask_path: Optional[str] = None  # Optional path to ground truth masks
+    predictions_path: str
+    imageA_path: str
+    imageB_path: str
+    mask_path: Optional[str] = None
 
 
 @dataclass
@@ -217,14 +244,14 @@ class VisualizationConfig:
 
     input: InputPaths
     output: VisualizationOutput
-    style: VisualizationStyle = VisualizationStyle()
+    style: VisualizationStyle = field(default_factory=VisualizationStyle)
 
     @classmethod
     def from_dict(cls, config_dict: dict) -> "VisualizationConfig":
         return cls(
             input=InputPaths(**config_dict["input"]),
             output=VisualizationOutput(**config_dict["output"]),
-            style=VisualizationStyle(**config_dict.get("style", {})),
+            style=VisualizationStyle.from_dict(config_dict.get("style", {})),
         )
 
     def validate(self):
@@ -245,8 +272,9 @@ class VisualizationConfig:
         assert (
             0 <= self.style.overlay_alpha <= 1
         ), "overlay_alpha must be between 0 and 1"
-        for color in self.style.overlay_color:
-            assert 0 <= color <= 1, "overlay_color values must be between 0 and 1"
+        for colors in self.style.class_colors:
+            for color in colors:
+                assert 0 <= color <= 1, "color values must be between 0 and 1"
 
         # Validate output parameters
         assert self.output.num_samples > 0, "num_samples must be positive"

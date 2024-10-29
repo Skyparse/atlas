@@ -144,3 +144,5 @@ src/data/*/**
 # Ignore all output files but keep the directory structure
 experiments
 predictions
+visualizations
+logs
