@@ -1,7 +1,7 @@
 # src/training/trainer.py
 import torch
 from tqdm import tqdm
-from .losses import CombinedLoss
+from .cd_losses import ChangeDetectionLoss
 from .optimizer import ModelOptimizer
 from ..utils.device_utils import move_to_device
 from torch.nn import functional as F
@@ -15,7 +15,7 @@ class ModelTrainer:
         self.logger = logger
 
         self.optimizer = ModelOptimizer(model, config)
-        self.criterion = CombinedLoss()
+        self.criterion = ChangeDetectionLoss(config)
         self.device = self.optimizer.device
 
         self.logger.info(f"Using device: {self.device}")
@@ -106,10 +106,6 @@ class ModelTrainer:
                 != 0,
             )
 
-            # For metrics, use the final output if deep supervision is enabled
-            if isinstance(outputs, list):
-                outputs = outputs[-1]  # Use the final prediction for metrics
-
             # Update metrics
             running_loss += loss.item()
             batch_metrics = self._compute_metrics(outputs, target)
@@ -152,10 +148,6 @@ class ModelTrainer:
             outputs = self.model(imageA, imageB)
             loss = self.criterion(outputs, target)
 
-            # For metrics, use the final output if deep supervision is enabled
-            if isinstance(outputs, list):
-                outputs = outputs[-1]  # Use the final prediction for metrics
-
             # Update metrics
             running_loss += loss.item()
             batch_metrics = self._compute_metrics(outputs, target)
@@ -172,11 +164,11 @@ class ModelTrainer:
 
     def _compute_metrics(self, outputs, target):
         """
-        Compute metrics for a batch of predictions
+        Compute metrics for a batch of predictions.
 
         Args:
             outputs: Model predictions (B, C, H, W)
-            target: One-hot encoded ground truth (B, C, H, W)
+            target: Ground truth masks (B, H, W) or (B, C, H, W)
         """
         with torch.no_grad():
             # Resize predictions to match target size
@@ -184,50 +176,94 @@ class ModelTrainer:
                 outputs, size=target.shape[2:], mode="bilinear", align_corners=False
             )
 
-            # Convert predictions to class probabilities
-            pred_softmax = F.softmax(outputs, dim=1)
-
-            # Get class indices
-            preds = outputs.argmax(dim=1)
-            target_indices = target.argmax(dim=1)
-
-            # Calculate accuracy
-            accuracy = (preds == target_indices).float().mean().item()
-
-            # Calculate IoU for each class
             num_classes = outputs.size(1)
-            ious = []
-            f1_scores = []
+            epsilon = 1e-7  # To prevent division by zero
 
-            for cls in range(num_classes):
-                # IoU calculation
-                pred_mask = preds == cls
-                target_mask = target_indices == cls
-                intersection = (pred_mask & target_mask).float().sum()
-                union = (pred_mask | target_mask).float().sum()
-                iou = (intersection + 1e-6) / (union + 1e-6)
-                ious.append(iou.item())
+            if num_classes == 1:
+                # Binary Segmentation Case
+                # Apply sigmoid activation
+                pred_probs = torch.sigmoid(outputs)  # Shape: (B, 1, H, W)
+                pred_probs = pred_probs.squeeze(1)  # Shape: (B, H, W)
 
-                # F1 score calculation
-                pred_cls = (pred_softmax[:, cls] > 0.5).float()
-                target_cls = target[:, cls].float()
+                # Apply threshold to get binary predictions
+                threshold = 0.6  # You can adjust this threshold
+                preds = (pred_probs > threshold).long()  # Shape: (B, H, W)
 
-                tp = (pred_cls * target_cls).sum()
-                fp = (pred_cls * (1 - target_cls)).sum()
-                fn = ((1 - pred_cls) * target_cls).sum()
+                # Ensure target is of shape (B, H, W)
+                if target.dim() == 4 and target.size(1) == 1:
+                    target = target.squeeze(1)
+                elif target.dim() == 4 and target.size(1) > 1:
+                    target = target.argmax(dim=1)
 
-                precision = tp / (tp + fp + 1e-6)
-                recall = tp / (tp + fn + 1e-6)
-                f1 = 2 * precision * recall / (precision + recall + 1e-6)
-                f1_scores.append(f1.item())
+                # Compute metrics
+                tp = ((preds == 1) & (target == 1)).sum().float()
+                tn = ((preds == 0) & (target == 0)).sum().float()
+                fp = ((preds == 1) & (target == 0)).sum().float()
+                fn = ((preds == 0) & (target == 1)).sum().float()
 
-            mean_iou = sum(ious) / len(ious)
-            mean_f1 = sum(f1_scores) / len(f1_scores)
+                accuracy = (tp + tn) / (tp + tn + fp + fn + epsilon)
+                precision = tp / (tp + fp + epsilon)
+                recall = tp / (tp + fn + epsilon)
+                f1 = 2 * (precision * recall) / (precision + recall + epsilon)
+                iou = tp / (tp + fp + fn + epsilon)
 
-            return {
-                "accuracy": accuracy,
-                "iou": mean_iou,
-                "f1": mean_f1,
-                **{f"iou_class_{i}": iou for i, iou in enumerate(ious)},
-                **{f"f1_class_{i}": f1 for i, f1 in enumerate(f1_scores)},
-            }
+                metrics = {
+                    "accuracy": accuracy.item(),
+                    "precision": precision.item(),
+                    "recall": recall.item(),
+                    "f1_score": f1.item(),
+                    "iou": iou.item(),
+                }
+
+            else:
+                # Multi-Class Segmentation Case
+                # Apply softmax activation
+                pred_probs = F.softmax(outputs, dim=1)  # Shape: (B, C, H, W)
+                preds = pred_probs.argmax(dim=1)  # Shape: (B, H, W)
+
+                # Ensure target is of shape (B, H, W)
+                if target.dim() == 4 and target.size(1) > 1:
+                    target = target.argmax(dim=1)
+                elif target.dim() == 4 and target.size(1) == 1:
+                    target = target.squeeze(1)
+
+                # Compute overall accuracy
+                accuracy = (preds == target).float().mean().item()
+
+                # Compute per-class IoU and F1 scores
+                ious = []
+                f1_scores = []
+                for cls in range(num_classes):
+                    pred_cls = preds == cls
+                    target_cls = target == cls
+
+                    intersection = (pred_cls & target_cls).float().sum()
+                    union = (pred_cls | target_cls).float().sum()
+                    iou = (intersection + epsilon) / (union + epsilon)
+                    ious.append(iou.item())
+
+                    # Compute precision, recall, F1 for each class
+                    tp = (pred_cls & target_cls).float().sum()
+                    fp = (pred_cls & ~target_cls).float().sum()
+                    fn = (~pred_cls & target_cls).float().sum()
+
+                    precision = tp / (tp + fp + epsilon)
+                    recall = tp / (tp + fn + epsilon)
+                    f1 = 2 * (precision * recall) / (precision + recall + epsilon)
+                    f1_scores.append(f1.item())
+
+                mean_iou = sum(ious) / num_classes
+                mean_f1 = sum(f1_scores) / num_classes
+
+                metrics = {
+                    "accuracy": accuracy,
+                    "mean_iou": mean_iou,
+                    "mean_f1_score": mean_f1,
+                }
+
+                # Optionally, include per-class metrics
+                for cls_idx in range(num_classes):
+                    metrics[f"iou_class_{cls_idx}"] = ious[cls_idx]
+                    metrics[f"f1_class_{cls_idx}"] = f1_scores[cls_idx]
+
+        return metrics

@@ -7,7 +7,6 @@ import logging
 import sys
 
 from src.utils.config import TrainExperimentConfig
-from src.models.enhanced_sunet import EnhancedSNUNet
 from src.training.trainer import ModelTrainer
 from src.training.callbacks import (
     ModelCheckpoint,
@@ -18,6 +17,7 @@ from src.training.callbacks import (
 from src.data.dataset import create_train_val_datasets
 from src.utils.logger_visuals import setup_logger
 from src.data.dataloader import create_dataloaders
+from src.models.snunet import SNUNet_ECAM
 
 
 def setup_experiment_dir(config):
@@ -95,7 +95,13 @@ def train():
 
         # Create model
         logger.info("Creating model...")
-        model = EnhancedSNUNet(config.model)
+        model_config = config.model
+        model = SNUNet_ECAM(
+            in_channels=model_config.in_channels,
+            num_classes=model_config.num_classes,
+            base_channel=model_config.base_channel,
+            depth=model_config.depth,
+        )
         model = model.to(device)
 
         # Setup callbacks

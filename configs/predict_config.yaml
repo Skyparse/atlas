@@ -2,18 +2,11 @@
 model:
     in_channels: 6
     num_classes: 1
-    base_channel: 32
-    depth: 5
-    use_transformer: false
-    transformer_heads: 8
-    transformer_dim_head: 64
-    transformer_dropout: 0.1
-    use_fpn: false
-    fpn_channels: 64
-    deep_supervision: true
+    base_channel: 48
+    depth: 8
 
 prediction:
-    weights_path: "experiments/mineops_change_detection_20241029_135501/checkpoints/best_model.pt"
+    weights_path: "experiments/mineops_change_detection_20241030_123522/checkpoints/best_model.pt"
     output_dir: "predictions"
     batch_size: 2
     parallel: false

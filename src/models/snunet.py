@@ -57,6 +57,7 @@ class SNUNet_ECAM(nn.Module):
         self.depth = depth
         n1 = base_channel
         self.filters = [n1 * (2**i) for i in range(depth)]
+
         self.in_channels = in_channels
         self.bilinear = bilinear
 
@@ -87,7 +88,7 @@ class SNUNet_ECAM(nn.Module):
             self.conv_blocks_up.append(ConvBlockNested(in_ch, out_ch, out_ch))
 
         # Final attention and classification layers
-        self.ca = ChannelAttention(self.filters[0], ratio=16)
+        self.ca = ChannelAttention(self.filters[0], ratio=8)
         self.conv_final = nn.Conv2d(self.filters[0], num_classes, kernel_size=1)
 
     def forward(self, xA, xB):

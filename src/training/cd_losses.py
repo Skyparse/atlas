@@ -82,43 +82,38 @@ class BinaryChangeDetectionLoss(nn.Module):
             gamma: Gamma parameter for focal loss
         """
         super().__init__()
-        self.focal_loss = FocalLoss(alpha=alpha, gamma=gamma)
-        self.dice_loss = DiceLoss()
+        # Weighted BCE Loss for handling class imbalance
+        self.bce_weights = None  # Will be computed dynamically
+
+        self.focal_loss = FocalLoss(
+            alpha=alpha,
+            gamma=gamma,
+        )
+
+        # Dice Loss with class weights
+        self.dice_loss = DiceLoss(smooth=1e-6)  # Reduced smoothing factor
+
         self.focal_weight = focal_weight
         self.dice_weight = dice_weight
 
+    def update_class_weights(self, target):
+        """Dynamically update class weights based on batch statistics"""
+        pos_weight = torch.sum(target == 0) / (torch.sum(target == 1) + 1e-6)
+        self.bce_weights = torch.tensor([pos_weight]).to(target.device)
+
     def forward(self, pred, target):
+        # Calculate individual losses
         focal = self.focal_loss(pred, target)
         dice = self.dice_loss(pred, target)
 
-        return self.focal_weight * focal + self.dice_weight * dice
+        # Weighted BCE for additional stability
+        bce = F.binary_cross_entropy_with_logits(
+            pred, target, pos_weight=self.bce_weights
+        )
 
-
-class ContrastiveLoss(nn.Module):
-    def __init__(self, margin=1.0, temperature=0.5):
-        """
-        Contrastive Loss for change detection features
-
-        Args:
-            margin: Margin for contrastive loss
-            temperature: Temperature for scaling
-        """
-        super().__init__()
-        self.margin = margin
-        self.temperature = temperature
-
-    def forward(self, feat1, feat2, target):
-        # Normalize features
-        feat1 = F.normalize(feat1, p=2, dim=1)
-        feat2 = F.normalize(feat2, p=2, dim=1)
-
-        # Calculate distance
-        dist = torch.pairwise_distance(feat1, feat2)
-
-        # Calculate loss
-        loss = target * dist.pow(2) + (1 - target) * F.relu(self.margin - dist).pow(2)
-
-        return loss.mean()
+        return (
+            self.focal_weight * focal + self.dice_weight * dice + 0.2 * bce
+        )  # Added BCE component
 
 
 class ChangeDetectionLoss(nn.Module):
@@ -136,17 +131,8 @@ class ChangeDetectionLoss(nn.Module):
             alpha=config.loss.focal_alpha,
             gamma=config.loss.focal_gamma,
         )
-        self.contrastive_loss = ContrastiveLoss(
-            margin=config.loss.contrastive_margin,
-            temperature=config.loss.contrastive_temperature,
-        )
-        self.contrastive_weight = config.loss.contrastive_weight
 
-    def forward(self, pred, target, feat1=None, feat2=None):
+    def forward(self, pred, target):
         loss = self.binary_loss(pred, target)
-
-        if feat1 is not None and feat2 is not None:
-            contrastive = self.contrastive_loss(feat1, feat2, target)
-            loss = loss + self.contrastive_weight * contrastive
 
         return loss

@@ -5,7 +5,7 @@ model:
     image_size: [512, 512] # Expected image resolution
 
 input:
-    predictions_path: "predictions/20241029_141318/predictions.npy"
+    predictions_path: "predictions/20241030_133743/predictions.npy"
     imageA_path: "src/data/02_model_input/mineops_cd_xA.npy"
     imageB_path: "src/data/02_model_input/mineops_cd_xB.npy"
     mask_path: "src/data/02_model_input/mineops_cd_y.npy" # Optional ground truth masks

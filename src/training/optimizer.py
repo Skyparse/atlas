@@ -1,8 +1,7 @@
 # src/training/optimizer.py
 import torch
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import OneCycleLR
-import torch.nn.utils.prune as prune
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from ..utils.device_utils import get_device_and_scaler
 
 
@@ -16,6 +15,7 @@ class ModelOptimizer:
             config: TrainExperimentConfig containing all configuration
         """
         self.model = model
+        params = self._get_layer_specific_lrs(model)
         self.config = config
 
         # Get appropriate device and scaler
@@ -25,30 +25,40 @@ class ModelOptimizer:
         self.model = self.model.to(self.device)
 
         # Create optimizer and scheduler
-        self.optimizer, self.scheduler = self._create_optimizer()
+        self.optimizer, self.scheduler = self._create_optimizer(params=params)
 
-    def _create_optimizer(self):
-        # Filter out parameters that don't require gradients
-        params = [p for p in self.model.parameters() if p.requires_grad]
+    def _get_layer_specific_lrs(self, model):
+        """Configure different learning rates for different parts of the model"""
+        encoder_params = []
+        decoder_params = []
 
+        for name, param in model.named_parameters():
+            if "conv_blocks_down" in name:
+                encoder_params.append(param)
+            else:
+                decoder_params.append(param)
+
+        return [
+            {"params": encoder_params, "lr": 1e-5},  # Lower LR for encoder
+            {"params": decoder_params, "lr": 5e-5},  # Higher LR for decoder
+        ]
+
+    def _create_optimizer(self, params):
         # Create optimizer with weight decay
         optimizer = AdamW(
             params,
             lr=self.config.training.learning_rate,
             weight_decay=self.config.training.weight_decay,
             betas=(0.9, 0.999),
+            eps=1e-8,
         )
 
         # Create scheduler
-        scheduler = OneCycleLR(
+        scheduler = CosineAnnealingWarmRestarts(
             optimizer,
-            max_lr=self.config.training.learning_rate,
-            epochs=self.config.training.num_epochs,
-            steps_per_epoch=1000,  # This should be calculated based on dataset size
-            pct_start=0.3,
-            anneal_strategy="cos",
-            div_factor=25.0,
-            final_div_factor=1000.0,
+            T_0=50,  # Initial restart interval
+            T_mult=2,  # Multiply interval by 2 after each restart
+            eta_min=1e-7,  # Minimum learning rate
         )
 
         return optimizer, scheduler

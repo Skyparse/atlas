@@ -8,10 +8,10 @@ from datetime import datetime
 from typing import Optional
 
 from src.utils.config import PredictExperimentConfig
-from src.models.enhanced_sunet import EnhancedSNUNet
 from src.data.dataset import create_prediction_dataset
 from src.utils.logger_visuals import setup_logger
 from src.data.dataloader import create_prediction_dataloader
+from src.models.snunet import SNUNet_ECAM
 
 
 def setup_device():
@@ -43,8 +43,6 @@ def process_batch(model, batch, device) -> torch.Tensor:
     imageA, imageB = [x.to(device) for x in batch]
     with torch.no_grad():
         outputs = model(imageA, imageB)
-        if isinstance(outputs, list):  # Handle deep supervision case
-            outputs = outputs[-1]  # Take final output
     return outputs
 
 
@@ -140,7 +138,13 @@ def predict():
 
         # Create and setup model
         logger.info("Loading model...")
-        model = EnhancedSNUNet(config.model)
+        model_config = config.model
+        model = SNUNet_ECAM(
+            in_channels=model_config.in_channels,
+            num_classes=model_config.num_classes,
+            base_channel=model_config.base_channel,
+            depth=model_config.depth,
+        )
 
         # Load weights
         weights_path = Path(config.prediction.weights_path)

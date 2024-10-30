@@ -10,13 +10,6 @@ class ModelConfig:
     num_classes: int
     base_channel: int
     depth: int
-    use_transformer: bool
-    transformer_heads: int
-    transformer_dim_head: int
-    transformer_dropout: float
-    use_fpn: bool
-    fpn_channels: int
-    deep_supervision: bool
 
 
 @dataclass
@@ -31,6 +24,14 @@ class TrainingConfig:
     mixed_precision: bool
     parallel: bool
     eval_frequency: int = 1
+
+
+@dataclass
+class LossConfig:
+    focal_weight: float
+    dice_weight: float
+    focal_alpha: float
+    focal_gamma: float
 
 
 @dataclass
@@ -83,6 +84,7 @@ class PredictionConfig:
 class TrainExperimentConfig:
     model: ModelConfig
     training: TrainingConfig
+    loss: LossConfig
     data: TrainingDataConfig
     output: OutputConfig
 
@@ -91,6 +93,7 @@ class TrainExperimentConfig:
         return cls(
             model=ModelConfig(**config_dict["model"]),
             training=TrainingConfig(**config_dict["training"]),
+            loss=LossConfig(**config_dict["loss"]),
             data=TrainingDataConfig(
                 **{
                     **config_dict["data"],
